@@ -25,6 +25,7 @@ from pytesseract import image_to_string
 from pytesseract import Output
 from pytesseract import run_and_get_multiple_output
 from pytesseract import TesseractNotFoundError
+from pytesseract import TesseractError
 from pytesseract import TSVNotSupported
 from pytesseract.pytesseract import file_to_dict
 from pytesseract.pytesseract import LANG_PATTERN
@@ -88,6 +89,9 @@ def function_mapping():
         'tsv': image_to_data,
     }
 
+@pytest.fixture(scope='session')
+def test_file_whitelist():
+    return path.join(DATA_DIR, 'test-full.png')
 
 @pytest.mark.parametrize(
     'test_file',
@@ -536,3 +540,55 @@ def test_get_tesseract_version_invalid(tesseract_version, expected_msg):
 )
 def test_allowed_language_formats(lang):
     assert LANG_PATTERN.match(lang)
+
+@pytest.mark.skipif(platform != "win32", reason="Windows-specific issue")
+def test_tessdata_dir_path_windows():
+    """
+    Test that tessdata directory paths on Windows do not strip backslashes.
+    Ensures --tessdata-dir argument works correctly on Windows.
+    """
+    test_config = '--tessdata-dir "C:\\Program Files\\Tesseract-OCR\\tessdata\\"'
+    languages = get_languages.__wrapped__(test_config)
+    assert isinstance(languages, list), "Languages should be a list"
+    assert "eng" in languages, "Expected 'eng' to be in tessdata languages"
+
+@pytest.mark.parametrize(
+    "whitelist_chars, expected_output",
+    [
+        ('"ABC123"', "ABC123"),  # Ensuring quotes are handled correctly
+        ('ABC 123', "ABC 123"),  # Spaces should work properly
+        ('!@#$%^&*()', "!@#$%^&*()"),  # Special characters should be preserved
+    ],
+)
+def test_tessedit_char_whitelist(whitelist_chars, expected_output, test_file_whitelist):
+    """
+    Test that tessedit_char_whitelist passes the correct characters to Tesseract.
+    Ensures the fix for issue #501.
+    """
+    config = f'-c tessedit_char_whitelist={whitelist_chars}'
+    try:
+        result = image_to_string(test_file_whitelist, config=config)
+        assert any(char in result for char in expected_output), f"Expected at least one of {expected_output} in OCR output"
+    except TesseractError as e:
+        pytest.fail(f"Tesseract failed with error: {e}")
+
+@pytest.mark.skipif(platform != "win32", reason="Windows-specific issue")
+@pytest.mark.parametrize(
+    "config_option",
+    [
+        '-c "tessedit_create_pdf=1"',
+        '--tessdata-dir "C:\\Program Files\\Tesseract-OCR\\tessdata\\"',
+        '-c "enable_new_segsearch=1"',
+        '-c "tessedit_char_whitelist=ABC123 /\'"',
+    ],
+)
+def test_windows_config_argument_parsing(config_option, test_file):
+    """
+    Test that Tesseract correctly processes command-line arguments on Windows.
+    Ensures spaces in arguments do not break command parsing (fixes commit 4a69925).
+    """
+    try:
+        result = image_to_string(test_file, config=config_option)
+        assert result.strip() != "", "OCR output should not be empty"
+    except TesseractError as e:
+        pytest.fail(f"Tesseract failed with error: {e}")

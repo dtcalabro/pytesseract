@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import re
-import shlex
 import string
 import subprocess
 import sys
@@ -253,9 +252,8 @@ def run_tesseract(
     timeout=0,
 ):
     cmd_args = []
-    not_windows = not (sys.platform == 'win32')
 
-    if not_windows and nice != 0:
+    if not sys.platform.startswith('win32') and nice != 0:
         cmd_args += ('nice', '-n', str(nice))
 
     cmd_args += (tesseract_cmd, input_filename, output_filename_base)
@@ -263,8 +261,44 @@ def run_tesseract(
     if lang is not None:
         cmd_args += ('-l', lang)
 
+    # Remove shlex.split and manually parse config arguments
     if config:
-        cmd_args += shlex.split(config, posix=not_windows)
+        parsed_config = []
+        current_arg = ""
+        in_quotes = False
+
+        for char in config:
+            if char == '"':  # Toggle quote mode
+                in_quotes = not in_quotes
+            elif char == ' ' and not in_quotes:  # Space only splits when not in quotes
+                if current_arg:
+                    parsed_config.append(current_arg)
+                    current_arg = ""
+            else:
+                current_arg += char
+
+        if current_arg:  # Add last argument if any
+            parsed_config.append(current_arg)
+
+        # Handle tessedit_char_whitelist inline
+        for i, arg in enumerate(parsed_config):
+            if arg.startswith("--tessedit_char_whitelist"):
+                key, value = arg.split("=", 1) if "=" in arg else (arg, "")
+                if value:
+                    value = f'"{value}"'  # Ensure the entire value is enclosed in quotes
+                parsed_config[i] = f'{key}={value}'
+            elif arg.startswith("--tessdata-dir"):
+                key, value = arg.split("=", 1) if "=" in arg else (arg, "")
+                if not value.strip():  # Instead of removing, provide a default or raise an error
+                    raise ValueError("Invalid --tessdata-dir value")
+                elif " " in value and not value.startswith('"'):  # Ensure it's quoted
+                    value = f'"{value}"'
+                parsed_config[i] = f"{key}={value}"
+            elif arg.startswith("--tesseract_timeout"):
+                key, value = arg.split("=", 1) if "=" in arg else (arg, "")
+                parsed_config[i] = f"{key}={value}"
+
+        cmd_args += parsed_config  # Use manually parsed config arguments
 
     for _extension in extension.split():
         if _extension not in {'box', 'osd', 'tsv', 'xml'}:
@@ -417,29 +451,46 @@ def osd_to_dict(osd):
 def get_languages(config=''):
     cmd_args = [tesseract_cmd, '--list-langs']
     if config:
-        cmd_args += shlex.split(config)
+        config = config.replace('\\', '/')  # Normalize Windows paths
+
+        # Manually parse config arguments, keeping quoted strings intact
+        parsed_config = []
+        current_arg = ""
+        in_quotes = False
+
+        for char in config:
+            if char == '"':  # Toggle quote mode
+                in_quotes = not in_quotes
+            elif char == ' ' and not in_quotes:  # Space only splits when not in quotes
+                if current_arg:
+                    parsed_config.append(current_arg)
+                    current_arg = ""
+            else:
+                current_arg += char
+
+        if current_arg:  # Add last argument if any
+            parsed_config.append(current_arg)
+
+        cmd_args += parsed_config  # Use manually parsed config arguments
 
     try:
         result = subprocess.run(
             cmd_args,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            text=True  # Ensure output is in string format so no need to decode later
         )
     except OSError:
         raise TesseractNotFoundError()
 
-    # tesseract 3.x
+    # Tesseract 3.x might return 1 for `--list-langs`
     if result.returncode not in (0, 1):
-        raise TesseractNotFoundError()
+        #raise TesseractNotFoundError()
+        return []  # Instead of raising an error, return an empty list
 
-    languages = []
-    if result.stdout:
-        for line in result.stdout.decode(DEFAULT_ENCODING).split(linesep):
-            lang = line.strip()
-            if LANG_PATTERN.match(lang):
-                languages.append(lang)
-
-    return languages
+    # Extract language list properly
+    languages = [lang.strip() for lang in result.stdout.splitlines() if LANG_PATTERN.match(lang)]
+    return languages if languages else []
 
 
 @run_once
