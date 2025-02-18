@@ -266,11 +266,18 @@ def run_tesseract(
         parsed_config = []
         current_arg = ""
         in_quotes = False
+        escape_next = False
 
         for char in config:
-            if char == '"':  # Toggle quote mode
-                in_quotes = not in_quotes
-            elif char == ' ' and not in_quotes:  # Space only splits when not in quotes
+            if escape_next:
+                current_arg += char             # Add the escaped character
+                escape_next = False             # Reset escape flag
+            elif char == "\\":
+                escape_next = True              # Mark next character as escaped
+            elif char == '"':
+                in_quotes = not in_quotes       # Toggle quote mode
+                current_arg += char             # Keep quotes in final output
+            elif char == ' ' and not in_quotes: # Space only splits when not in quotes
                 if current_arg:
                     parsed_config.append(current_arg)
                     current_arg = ""
